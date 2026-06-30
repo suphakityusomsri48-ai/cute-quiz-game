@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cute Quiz Party! - No Server</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #111; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+    </style>
+</head>
+<body>
+
+<script>
+    const config = {
+        type: Phaser.AUTO,
+        width: 800, height: 600,       
+        backgroundColor: '#1a252f', 
+        scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+        physics: { default: 'arcade', arcade: { gravity: { y: 0 }, debug: false } },
+        scene: { preload: preload, create: create, update: update }
+    };
+
+    const game = new Phaser.Game(config);
+    let player;
+    const playerSpeed = 320;
+
+    // UI & Joystick
+    let joystickBase, joystickStick, isDragging = false;
+    let joystickData = { x: 0, y: 0, forceX: 0, forceY: 0 };
+    const maxRadius = 55; 
+    let leftZone, rightZone, statusText, questionText, timerText, scoreText, quizWindow;
+
+    // Game Logic (รันตรงๆ บนเว็บไม่ต้องพึ่ง Server)
+    let score = 0;
+    let timeLeft = 10;
+    let timerEvent;
+    let currentQuizIndex = 0;
+    let isAnsweringState = true;
+    let currentAnswer = '';
+
+    const quizBank = [
+        { q: "มดแดงมี 6 ขา ใช่หรือไม่?", left: "ใช่ (A)", right: "ไม่ใช่ (B)", answer: "left" },
+        { q: "10 x 5 เท่ากับเท่าไหร่?", left: "45 (A)", right: "50 (B)", answer: "right" },
+        { q: "กรุงเทพฯ เป็นเมืองหลวงของไทย?", left: "ใช่ (A)", right: "ไม่ใช่ (B)", answer: "left" }
+    ];
+
+    function preload() {}
+
+    function create() {
+        // วาดเส้นแบ่งแดนสีทอง
+        this.add.graphics().fillStyle(0xf1c40f, 0.3).fillRect(397, 0, 6, 600).setDepth(1);
+        
+        // แท่นฝั่ง A (ซ้าย)
+        leftZone = this.add.container(195, 300);
+        let leftBg = this.add.rectangle(0, 0, 370, 560, 0xff7675, 0.95);
+        let leftText = this.add.text(0, 0, 'A', { fontSize: '120px', fontWeight: 'bold', fill: '#ffffff', alpha: 0.15 }).setOrigin(0.5);
+        leftZone.add([leftBg, leftText]);
+        this.physics.add.existing(leftBg, true);
+
+        // แท่นฝั่ง B (ขวา)
+        rightZone = this.add.container(605, 300);
+        let rightBg = this.add.rectangle(0, 0, 370, 560, 0x74b9ff, 0.95);
+        let rightText = this.add.text(0, 0, 'B', { fontSize: '120px', fontWeight: 'bold', fill: '#ffffff', alpha: 0.15 }).setOrigin(0.5);
+        rightZone.add([rightBg, rightText]);
+        this.physics.add.existing(rightBg, true);
+
+        // สร้างตัวละครน่ารักตาโต
+        let pG = this.make.graphics({ x: 0, y: 0, add: false });
+        pG.fillStyle(0xf5f6fa, 1).fillRoundedRect(0, 0, 44, 44, 12); 
+        pG.fillStyle(0x2f3640, 1).fillCircle(14, 16, 4).fillCircle(30, 16, 4); 
+        pG.generateTexture('playerTex', 44, 44);
+        
+        player = this.physics.add.sprite(400, 180, 'playerTex').setDepth(5);
+        player.setCollideWorldBounds(true);
+
+        // ตกแต่งหน้าต่าง UI คำถาม
+        quizWindow = this.add.graphics().setDepth(10);
+        quizWindow.fillStyle(0x2c3e50, 0.95).fillRoundedRect(100, 20, 600, 110, 16);
+        quizWindow.lineStyle(3, 0xf1c40f, 1).strokeRoundedRect(100, 20, 600, 110, 16);
+
+        questionText = this.add.text(400, 55, '', { 
+            fontSize: '22px', fill: '#ffffff', fontFamily: 'Arial', align: 'center', fontWeight: 'bold' 
+        }).setOrigin(0.5).setDepth(11);
+
+        this.add.circle(400, 110, 24, 0x111111, 0.6).setDepth(10);
+        timerText = this.add.text(400, 110, '10', { 
+            fontSize: '26px', fill: '#f1c40f', fontFamily: 'Arial', fontWeight: 'bold' 
+        }).setOrigin(0.5).setDepth(11);
+
+        scoreText = this.add.text(730, 35, '✨ แต้ม: 0', { 
+            fontSize: '20px', fill: '#fff', fontWeight: 'bold', backgroundColor: '#e67e22', padding: { x: 12, y: 6 } 
+        }).setOrigin(1, 0.5).setDepth(12);
+
+        statusText = this.add.text(400, 560, 'เริ่มเกม...', { 
+            fontSize: '18px', fill: '#ffffff', fontWeight: 'bold', backgroundColor: '#2f3640', padding: { x: 15, y: 6 } 
+        }).setOrigin(0.5).setDepth(12);
+
+        setupJoystick(this);
+        nextQuestion(this);
+    }
+
+    function update() {
+        if (!player) return;
+        player.setVelocityX(joystickData.forceX * playerSpeed);
+        
+        let leftBg = leftZone.list[0];
+        let rightBg = rightZone.list[0];
+
+        if (isAnsweringState) {
+            player.setVelocityY(joystickData.forceY * playerSpeed);
+            if (this.physics.overlap(player, leftBg)) statusText.setText('🏃 คุณเลือกฝั่ง A');
+            else if (this.physics.overlap(player, rightBg)) statusText.setText('🏃 คุณเลือกฝั่ง B');
+            else statusText.setText('❓ เลือกฝั่งไหนดีนะ?');
+        } else {
+            let standingOnCorrect = false;
+            if (currentAnswer === 'left' && this.physics.overlap(player, leftBg)) standingOnCorrect = true;
+            if (currentAnswer === 'right' && this.physics.overlap(player, rightBg)) standingOnCorrect = true;
+
+            if (!standingOnCorrect) {
+                player.setVelocityY(420);
+                statusText.setText('😭 ว้า... ตอบผิดซะแล้ว!');
+            } else {
+                player.setVelocityY(0);
+                statusText.setText('🎉 เก่งมาก! ตอบถูกแล้ว');
+            }
+        }
+    }
+
+    function nextQuestion(scene) {
+        isAnsweringState = true;
+        leftZone.setVisible(true);
+        rightZone.setVisible(true);
+        player.setPosition(400, 180); 
+
+        let currentQuiz = quizBank[currentQuizIndex];
+        questionText.setText(currentQuiz.q + "\nฝั่ง A: " + currentQuiz.left + "  |  ฝั่ง B: " + currentQuiz.right);
+
+        timeLeft = 10;
+        timerText.setText(timeLeft);
+        timerText.setFill('#f1c40f');
+        
+        if (timerEvent) timerEvent.destroy();
+        timerEvent = scene.time.addEvent({
+            delay: 1000,
+            callback: () => {
+                timeLeft--;
+                timerText.setText(timeLeft);
+                if (timeLeft <= 3) timerText.setFill('#ff7675');
+                if (timeLeft <= 0) {
+                    checkAnswer(scene);
+                }
+            },
+            loop: true
+        });
+    }
+
+    function checkAnswer(scene) {
+        timerEvent.destroy();
+        isAnsweringState = false;
+        let currentQuiz = quizBank[currentQuizIndex];
+        currentAnswer = currentQuiz.answer;
+        timerText.setText('!');
+
+        if (currentAnswer === 'left') { rightZone.setVisible(false); } 
+        else { leftZone.setVisible(false); }
+
+        let leftBg = leftZone.list[0];
+        let rightBg = rightZone.list[0];
+        let isCorrect = false;
+        if (currentAnswer === 'left' && scene.physics.overlap(player, leftBg)) isCorrect = true;
+        if (currentAnswer === 'right' && scene.physics.overlap(player, rightBg)) isCorrect = true;
+
+        if (isCorrect) {
+            score += 10;
+            scoreText.setText('✨ แต้ม: ' + score);
+        }
+
+        scene.time.delayedCall(4000, () => {
+            currentQuizIndex = (currentQuizIndex + 1) % quizBank.length;
+            nextQuestion(scene);
+        });
+    }
+
+    function setupJoystick(scene) {
+        const jx = 120; const jy = 480; 
+        joystickBase = scene.add.circle(jx, jy, maxRadius, 0xffffff, 0.15).setStrokeStyle(2, 0xffffff, 0.4).setDepth(20);
+        joystickStick = scene.add.circle(jx, jy, 26, 0xffffff, 0.6).setDepth(21);
+        joystickData.x = jx; joystickData.y = jy;
+        scene.input.on('pointerdown', (p) => { if (Phaser.Math.Distance.Between(p.x, p.y, joystickData.x, joystickData.y) <= maxRadius + 20) isDragging = true; });
+        scene.input.on('pointermove', (p) => {
+            if (!isDragging) return;
+            let angle = Phaser.Math.Angle.Between(joystickData.x, joystickData.y, p.x, p.y);
+            let dist = Phaser.Math.Distance.Between(joystickData.x, joystickData.y, p.x, p.y);
+            if (dist > maxRadius) dist = maxRadius;
+            joystickStick.x = joystickData.x + Math.cos(angle) * dist;
+            joystickStick.y = joystickData.y + Math.sin(angle) * dist;
+            joystickData.forceX = (joystickStick.x - joystickData.x) / maxRadius;
+            joystickData.forceY = (joystickStick.y - joystickData.y) / maxRadius;
+        });
+        scene.input.on('pointerup', () => { isDragging = false; joystickStick.x = joystickData.x; joystickStick.y = joystickData.y; joystickData.forceX = 0; joystickData.forceY = 0; });
+    }
+</script>
+
+</body>
+</html>
